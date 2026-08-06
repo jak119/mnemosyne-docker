@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.gitignore
+README.md
+compose.yaml
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

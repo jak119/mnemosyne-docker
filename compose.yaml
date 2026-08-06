@@ -1,0 +1,21 @@
+services:
+  mnemosyne:
+    image: "${MNEMOSYNE_IMAGE:-ghcr.io/jak119/mnemosyne-docker:${MNEMOSYNE_IMAGE_TAG:-latest}}"
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 10s
+    ports:
+      - "${MNEMOSYNE_HOST:-0.0.0.0}:${MNEMOSYNE_PORT:-8080}:8080"
+    environment:
+      MNEMOSYNE_DATA_DIR: /data
+      MNEMOSYNE_LLM_ENABLED: "${MNEMOSYNE_LLM_ENABLED:-false}"
+      MNEMOSYNE_MCP_TOKEN: "${MNEMOSYNE_MCP_TOKEN:?MNEMOSYNE_MCP_TOKEN must be set}"
+    volumes:
+      - mnemosyne-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  mnemosyne-data:
