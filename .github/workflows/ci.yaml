@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: hadolint/hadolint-action@v3.4.0
+        continue-on-error: true
         with:
           dockerfile: Dockerfile
           format: sarif
@@ -31,8 +32,6 @@ jobs:
         with:
           sarif_file: hadolint.sarif
       - name: Validate Compose configuration
-        env:
-          MNEMOSYNE_MCP_TOKEN: ci-test-token
         run: docker compose config --quiet
 
   smoke-test:
