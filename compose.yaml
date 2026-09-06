@@ -1,6 +1,7 @@
 services:
   mnemosyne:
     image: "${MNEMOSYNE_IMAGE:-ghcr.io/jak119/mnemosyne-docker:${MNEMOSYNE_IMAGE_TAG:-latest}}"
+    command: ["mcp", "--transport", "sse", "--host", "0.0.0.0", "--port", "8080"]
     restart: unless-stopped
     init: true
     stop_grace_period: 10s
@@ -9,13 +10,44 @@ services:
     environment:
       MNEMOSYNE_DATA_DIR: /data
       MNEMOSYNE_LLM_ENABLED: "${MNEMOSYNE_LLM_ENABLED:-false}"
-      MNEMOSYNE_MCP_TOKEN: "${MNEMOSYNE_MCP_TOKEN:?MNEMOSYNE_MCP_TOKEN must be set}"
+      MNEMOSYNE_MCP_TOKEN: "${MNEMOSYNE_MCP_TOKEN:-}"
+      MNEMOSYNE_JOURNAL_MODE: "${MNEMOSYNE_JOURNAL_MODE:-wal}"
     volumes:
       - mnemosyne-data:/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    profiles:
+      - mcp
+      - all
+
+  mnemosyne-sync:
+    image: "${MNEMOSYNE_IMAGE:-ghcr.io/jak119/mnemosyne-docker:${MNEMOSYNE_IMAGE_TAG:-latest}}"
+    command: ["sync-serve"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 10s
+    ports:
+      - "${MNEMOSYNE_SYNC_HOST:-0.0.0.0}:${MNEMOSYNE_SYNC_PORT:-8765}:8765"
+    environment:
+      MNEMOSYNE_DATA_DIR: /data
+      MNEMOSYNE_SYNC_HOST: "0.0.0.0"
+      MNEMOSYNE_SYNC_PORT: "8765"
+      MNEMOSYNE_SYNC_API_KEY: "${MNEMOSYNE_SYNC_API_KEY:-}"
+      MNEMOSYNE_SYNC_API_KEY_FILE: "${MNEMOSYNE_SYNC_API_KEY_FILE:-}"
+      MNEMOSYNE_SYNC_JWT_SECRET: "${MNEMOSYNE_SYNC_JWT_SECRET:-}"
+      MNEMOSYNE_SYNC_JWT_SECRET_FILE: "${MNEMOSYNE_SYNC_JWT_SECRET_FILE:-}"
+      MNEMOSYNE_JOURNAL_MODE: "${MNEMOSYNE_JOURNAL_MODE:-wal}"
+    volumes:
+      - mnemosyne-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    profiles:
+      - sync
+      - all
 
 volumes:
   mnemosyne-data:

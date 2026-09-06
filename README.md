@@ -1,6 +1,6 @@
 # mnemosyne-docker
 
-A Docker deployment of the [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) MCP memory server with persistent SQLite storage and local embeddings.
+A Docker deployment of the [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory system, supporting both the **MCP server** (port 8080) and the **Sync server** (port 8765) with persistent SQLite storage and local embeddings.
 
 ## Requirements
 
@@ -10,28 +10,98 @@ A Docker deployment of the [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyn
 
 ## Quick start
 
+### 1. Configure environment
+
 ```sh
 cp .env.example .env
+```
+
+Generate secure tokens for your services:
+
+```sh
 openssl rand -hex 32
 ```
 
-Set the generated value as `MNEMOSYNE_MCP_TOKEN` in `.env`, then start the server:
+Configure `.env` according to the mode you want to run:
+
+- **MCP server only (default)**: Set `MNEMOSYNE_MCP_TOKEN` and `COMPOSE_PROFILES=mcp`
+- **Sync server only (VPS / remote)**: Set `MNEMOSYNE_SYNC_API_KEY` and `COMPOSE_PROFILES=sync`
+- **Both services (MCP + Sync)**: Set both tokens and `COMPOSE_PROFILES=all`
+
+### 2. Start the service(s)
 
 ```sh
 docker compose up -d
 docker compose ps
 ```
 
-Compose pulls `ghcr.io/jak119/mnemosyne-docker:latest` by default and publishes the MCP SSE endpoint at `http://<server-address>:8080/sse`. Clients must send the token in every request:
+Compose pulls `ghcr.io/jak119/mnemosyne-docker:latest` by default.
+
+---
+
+## Operating Modes
+
+### Mode 1: MCP Server (Default)
+
+The MCP SSE endpoint is served at `http://<server-address>:8080/sse`. Clients authenticate via bearer token:
 
 ```text
 Authorization: Bearer <MNEMOSYNE_MCP_TOKEN>
 ```
 
-> [!WARNING]
-> The default `MNEMOSYNE_HOST=0.0.0.0` exposes an authenticated memory service on every network interface. Use a long random `MNEMOSYNE_MCP_TOKEN`, protect the host with a firewall, and use a TLS reverse proxy before exposing the endpoint to an untrusted network or the Internet. Set `MNEMOSYNE_HOST=127.0.0.1` when only local clients need access.
+Start explicitly:
+```sh
+docker compose --profile mcp up -d
+```
 
-Set `MNEMOSYNE_PORT` to change the host port, `MNEMOSYNE_HOST` to control the bind address, and `MNEMOSYNE_IMAGE_TAG` to select a published version.
+### Mode 2: Sync Server
+
+The Sync server enables bidirectional delta sync between Mnemosyne instances (e.g. desktop to VPS). The endpoint is served at `http://<server-address>:8765` (`POST /sync/pull` and `POST /sync/push`).
+
+Start explicitly:
+```sh
+docker compose --profile sync up -d
+```
+
+#### Syncing from a client machine
+
+1. Generate an encryption key (optional but recommended for client-side encryption):
+   ```sh
+   docker compose exec mnemosyne-sync mnemosyne sync-generate-key > mnemosyne-sync-encryption.key
+   ```
+
+2. Initialize a dedicated sync database on the client:
+   ```sh
+   MNEMOSYNE_SYNC_DB="$HOME/.mnemosyne/shared-surface.db"
+   mkdir -p "$(dirname "$MNEMOSYNE_SYNC_DB")"
+   chmod 700 "$(dirname "$MNEMOSYNE_SYNC_DB")"
+   mnemosyne sync-init --db-path "$MNEMOSYNE_SYNC_DB"
+   ```
+
+3. Synchronize memories:
+   ```sh
+   # Bidirectional sync with API key
+   mnemosyne sync --db-path "$MNEMOSYNE_SYNC_DB" \
+     --remote https://memory.example.com \
+     --api-key "your-sync-api-key"
+
+   # With client-side encryption (payloads encrypted before leaving client)
+   MNEMOSYNE_SYNC_KEY="$(cat mnemosyne-sync-encryption.key)" \
+     mnemosyne sync --db-path "$MNEMOSYNE_SYNC_DB" \
+       --remote https://memory.example.com \
+       --api-key "your-sync-api-key" \
+       --encrypt
+   ```
+
+### Mode 3: Dual Mode (MCP + Sync Server)
+
+Run both the MCP server and the Sync server side-by-side. Both services share the same persistent SQLite database via SQLite WAL mode:
+
+```sh
+docker compose --profile all up -d
+```
+
+---
 
 ## Published image
 
@@ -48,32 +118,41 @@ After the first publish, set the `mnemosyne-docker` package visibility to **Publ
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MNEMOSYNE_MCP_TOKEN` | Required | Bearer token required by Mnemosyne for a non-loopback container bind |
+| `COMPOSE_PROFILES` | `mcp` | Active Compose profiles: `mcp` (MCP only), `sync` (Sync only), or `all` (both) |
+| `MNEMOSYNE_MCP_TOKEN` | Required for MCP | Bearer token required by Mnemosyne for non-loopback MCP binds |
+| `MNEMOSYNE_HOST` | `0.0.0.0` | Host bind address for MCP server |
+| `MNEMOSYNE_PORT` | `8080` | Port published for MCP server |
+| `MNEMOSYNE_LLM_ENABLED` | `false` | Enables optional LLM-based consolidation when model/backend is available |
+| `MNEMOSYNE_SYNC_API_KEY` | Required for Sync | Secret API key for Sync server authentication |
+| `MNEMOSYNE_SYNC_HOST` | `0.0.0.0` | Host bind address for Sync server |
+| `MNEMOSYNE_SYNC_PORT` | `8765` | Port published for Sync server |
 | `MNEMOSYNE_IMAGE_TAG` | `latest` | Published image tag; pin a version for repeatable deployments |
-| `MNEMOSYNE_HOST` | `0.0.0.0` | Host bind address; use `127.0.0.1` for local-only access |
-| `MNEMOSYNE_PORT` | `8080` | Port published on `MNEMOSYNE_HOST` |
-| `MNEMOSYNE_LLM_ENABLED` | `false` | Enables optional LLM-based consolidation when its dependencies and model are available |
 
-Mnemosyne stores its database at `/data/mnemosyne.db`. The Compose-managed `mnemosyne-data` volume persists the database when containers are replaced.
-
-Local embeddings are included in the image. The first semantic operation can take longer while the embedding model is initialized or downloaded.
+Mnemosyne stores its database at `/data/mnemosyne.db`. The Compose-managed `mnemosyne-data` volume persists the database across container recreations.
 
 ## Operations
 
 View logs:
 
 ```sh
+# All active services
+docker compose logs -f
+
+# MCP service only
 docker compose logs -f mnemosyne
+
+# Sync service only
+docker compose logs -f mnemosyne-sync
 ```
 
-Stop or restart the service:
+Stop or restart services:
 
 ```sh
 docker compose stop
 docker compose restart
 ```
 
-Remove the container without deleting its data:
+Remove containers without deleting stored data:
 
 ```sh
 docker compose down
@@ -118,33 +197,34 @@ Confirm the service becomes healthy before removing a backup.
 
 ## Troubleshooting
 
-### Compose reports that `MNEMOSYNE_MCP_TOKEN` must be set
+### Compose reports that tokens are missing
 
-Copy `.env.example` to `.env` and set a non-empty, randomly generated token.
+Ensure `.env` exists with `MNEMOSYNE_MCP_TOKEN` set for the MCP server or `MNEMOSYNE_SYNC_API_KEY` set for the Sync server.
 
 ### The container repeatedly restarts
 
+Check logs for the failing service:
+
 ```sh
 docker compose logs mnemosyne
-docker compose config
+docker compose logs mnemosyne-sync
 ```
 
-A non-loopback SSE bind is intentionally rejected by Mnemosyne when the token is missing.
+Non-loopback binds are rejected by Mnemosyne when required authentication tokens are missing.
 
-### The service is not healthy
+### Health check failures
 
-```sh
-docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q mnemosyne)"
-```
-
-The health check confirms that the MCP server accepts TCP connections on port 8080 inside the container. Initial image startup and embedding initialization can be slower on resource-constrained hosts.
+The image checks active ports (`:8080` for MCP, `:8765` for Sync). Initial startup and embedding model initialization can take longer on resource-constrained hosts.
 
 ### Permission errors with a bind mount
 
-The image runs as UID and GID `10001`. If the named volume is replaced with a host bind mount, make the host directory writable by that identity.
+The image runs as UID and GID `10001`. If the named volume is replaced with a host bind mount, make the host directory writable by that identity (`chown -R 10001:10001 <path>`).
 
 ## Security
 
-The Compose service requires bearer authentication, runs as a non-root user, drops all Linux capabilities, and enables `no-new-privileges`. It is publicly reachable by default, so use a firewall and a TLS reverse proxy while retaining bearer authentication before making it available beyond a trusted network.
+- Both services require bearer/API-key authentication.
+- Containers run as an unprivileged user (`10001:10001`), drop all Linux capabilities (`cap_drop: ALL`), and enable `no-new-privileges: true`.
+- Always protect endpoints behind a TLS reverse proxy (e.g. Caddy, Nginx) before exposing them to untrusted networks or the public Internet.
+- When using Sync across untrusted hosts, enable client-side encryption (`--encrypt`).
 
 Mnemosyne is distributed under the MIT License. See the [upstream project](https://github.com/mnemosyne-oss/mnemosyne) for its source and license.

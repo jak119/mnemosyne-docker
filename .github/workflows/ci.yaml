@@ -35,7 +35,9 @@ jobs:
           sarif_file: hadolint.sarif
       - name: Validate Compose configuration
         env:
+          COMPOSE_PROFILES: all
           MNEMOSYNE_MCP_TOKEN: ci-test-token
+          MNEMOSYNE_SYNC_API_KEY: ci-sync-token
         run: docker compose config --quiet
 
   smoke-test:
@@ -45,7 +47,9 @@ jobs:
       contents: read
       packages: write
     env:
+      COMPOSE_PROFILES: all
       MNEMOSYNE_MCP_TOKEN: ci-test-token
+      MNEMOSYNE_SYNC_API_KEY: ci-sync-token
       MNEMOSYNE_IMAGE_TAG: ci-${{ github.sha }}
     steps:
       - uses: actions/checkout@v7
@@ -67,32 +71,43 @@ jobs:
           tags: ${{ steps.image.outputs.name }}:${{ env.MNEMOSYNE_IMAGE_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
-      - name: Start service
+      - name: Start services
         run: docker compose up --detach --pull never
-      - name: Wait for healthy service
+      - name: Wait for healthy services
         run: |
-          for _ in $(seq 1 60); do
-            container_id=$(docker compose ps --all --quiet mnemosyne)
-            if [ -n "$container_id" ]; then
-              status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")
-              if [ "$status" = "healthy" ]; then
-                exit 0
+          for service in mnemosyne mnemosyne-sync; do
+            status=""
+            for _ in $(seq 1 60); do
+              container_id=$(docker compose ps --all --quiet "$service")
+              if [ -n "$container_id" ]; then
+                status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")
+                if [ "$status" = "healthy" ]; then
+                  break
+                fi
+                if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
+                  docker compose logs "$service"
+                  exit 1
+                fi
               fi
-              if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
-                docker compose logs mnemosyne
-                exit 1
-              fi
+              sleep 5
+            done
+            if [ "$status" != "healthy" ]; then
+              docker compose logs "$service"
+              exit 1
             fi
-            sleep 5
           done
-          docker compose logs mnemosyne
-          exit 1
-      - name: Verify bearer authentication
+      - name: Verify MCP bearer authentication
         run: |
           unauthenticated_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 5 http://127.0.0.1:8080/sse || true)
           test "$unauthenticated_status" = "401"
           authenticated_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 5 --header 'Authorization: Bearer ci-test-token' http://127.0.0.1:8080/sse || true)
           test "$authenticated_status" = "200"
+      - name: Verify Sync API authentication
+        run: |
+          sync_unauth=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 5 -X POST http://127.0.0.1:8765/sync/pull || true)
+          test "$sync_unauth" = "401"
+          sync_auth=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 5 -X POST -H 'Authorization: Bearer ci-sync-token' -H 'Content-Type: application/json' -d '{"device_id":"ci-test"}' http://127.0.0.1:8765/sync/pull || true)
+          test "$sync_auth" = "200" || test "$sync_auth" = "422"
       - uses: docker/login-action@v4
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
         with:
@@ -112,7 +127,7 @@ jobs:
           docker push "$IMAGE_NAME:latest"
       - name: Show service logs
         if: failure()
-        run: docker compose logs mnemosyne
+        run: docker compose logs
       - name: Stop service
         if: always()
         run: docker compose down --volumes
